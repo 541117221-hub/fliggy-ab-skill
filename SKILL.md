@@ -36,15 +36,15 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
 
 #### 模式A：AB实验模式（有实验ID）
 
-| 序号 | 必问信息 | 示例 |
-|------|----------|------|
-| 1 | 实验ID | 808 |
-| 2 | 对照组分组ID | 3876, 3870 |
-| 3 | 实验组分组ID | 3877, 3871 |
-| 4 | 实验目标人群/诸葛人群ID（若有） | 86416（菲住会员人群包）。**无则不填** |
-| 5 | 是否需要人群维度拆分 | 88VIP（`is_88_vip`）、诸葛人群等 |
-| 6 | 观测指标口径 | 酒店列表页曝光UV → 详情页UV → 下单UV |
-| 7 | 查询日期范围 | 2026-05-08 至 2026-05-13 |
+| 序号 | 必问信息 | 必填/选填 | 示例 |
+|------|----------|----------|------|
+| 1 | 实验ID | **选填** | 808（有则提供，无则不填） |
+| 2 | 对照组分组ID | **必填** | 3876, 3870 |
+| 3 | 实验组分组ID | **必填** | 3871, 3877 |
+| 4 | 实验目标人群/诸葛人群ID（若有） | **选填** | 86416（菲住会员人群包）。**无则不填** |
+| 5 | 是否需要人群维度拆分 | **选填** | 88VIP（`is_88_vip`）、诸葛人群等 |
+| 6 | 观测指标口径 | **必填** | 酒店列表页曝光UV → 详情页UV → 下单UV |
+| 7 | 查询日期范围 | **必填** | 2026-05-08 至 2026-05-13 |
 
 #### 模式B：人群包模式（无实验ID，直接对比两个人群包）
 
@@ -63,7 +63,7 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
 - 对照组和实验组的分组ID也必须由用户主动提供，不得假设或沿用历史数据。
 - **询问方式示例**：
   - `请选择分析模式：A-AB实验（有实验ID） / B-人群包对比（无实验ID，直接对比两个人群包）`
-  - 模式A：`请提供实验ID、对照组分组ID、实验组分组ID、日期范围。实验是否有目标人群（如诸葛人群包）？如有请提供人群ID，无则留空。`
+  - 模式A：`请提供对照组分组ID、实验组分组ID、日期范围。实验ID有则提供（如808），无则留空；是否有目标人群（如诸葛人群包）？如有请提供人群ID。`
   - 模式B：`请提供对照组人群包ID、实验组人群包ID、日期范围。如知道FDP维度名也请告知（否则优先尝试group_id）`
 
 > **目标人群ID vs 人群维度拆分的区别**：
@@ -113,7 +113,7 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
    - 同一连接下`get_meta_data_group`（businessSpace="hotel_decision"）可正常返回完整元数据
    - `query_fdp_log`返回正常业务错误（如"未查询到日志"）而非授权失败
 
-**参数模板（AB实验）：**
+**参数模板（AB实验，有实验ID时）：**
 
 ```json
 {
@@ -140,6 +140,40 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
   }
 }
 ```
+
+**参数模板（AB实验，无实验ID时——诸葛人群实验等场景）：**
+
+当用户只有分组ID而没有实验ID时，**移除`abtest_id`过滤条件**，仅用`abtest_group_id`过滤：
+
+```json
+{
+  "businessSpace": "hotel_decision",
+  "moduleName": "实验分析",
+  "joinType": "FULL",
+  "dateRange": {"start": "2026-05-08", "end": "2026-05-13"},
+  "dimensions": ["biz_date", "abtest_group_id", "is_88_vip"],
+  "measures": ["htl_listing_pv_fromlisting", "htl_listing_ipv_fromlisting", "reserve_uv_1d_all_zx_cal"],
+  "filter": {
+    "concat": "AND",
+    "children": [
+      {"key": "abtest_group_id", "operator": "in", "value": "'3870','3871','3876','3877'"}
+    ]
+  },
+  "limit": {"count": 1000, "start": 0},
+  "extParams": {
+    "isCalDayAvg": false,
+    "sameTermRatioTypes": [],
+    "isRemoveBizDateFilter": true,
+    "skillVersion": "1.3.0",
+    "query": "实验数据查询（无实验ID）"
+  }
+}
+```
+
+> **有无实验ID的区别**：
+> - **有实验ID**：`filter.children`包含`abtest_id` + `abtest_group_id`（双重过滤，更精确）
+> - **无实验ID**（如诸葛人群实验）：`filter.children`只包含`abtest_group_id`（分组ID是唯一过滤条件）
+> - 若用户未提供实验ID，**严禁擅自添加`abtest_id`过滤**——否则可能因ID不存在导致查询返回空
 
 > **目标人群/诸葛人群ID过滤**：若用户提供了实验目标人群的诸葛人群ID（如86416），需在`filter.children`中追加人群维度过滤条件。常见维度为`group_id`（人群包ID映射），具体以用户业务侧FDP元数据为准：
 > ```json
