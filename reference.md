@@ -238,3 +238,125 @@ def power_analysis(n_ctrl, x_ctrl, n_exp, x_exp, days):
         "days_needed": days_needed
     }
 ```
+
+---
+
+## 增量UV估算 + 推全外推 Python 模板（v8 标准）
+
+```python
+# 流量配比假设（默认值；用户可指定）
+TRAFFIC_RATIO = 0.25       # 实验桶占大盘比例
+ROLLOUT_MULT = 1 / TRAFFIC_RATIO  # 推全倍数（口径A=4）
+NIGHTS_PER_UV = 1.5        # 间夜换算系数（酒店业务历史经验值）
+N_DAYS = 14                # 实验观测天数
+
+def estimate_incremental_uv(pv_ctrl, order_uv_ctrl, pv_exp, order_uv_exp, n_days):
+    """
+    增量下单UV估算（曝光对等假设·避免伪负值）
+    返回三种口径 + 日均 + 推全估算 + 间夜估算
+    """
+    l2o_ctrl = order_uv_ctrl / pv_ctrl
+    l2o_exp  = order_uv_exp / pv_exp
+    delta_l2o = l2o_exp - l2o_ctrl
+
+    # 三种口径
+    inc_by_exp_pv  = delta_l2o * pv_exp                  # 旁证1：实验组PV
+    inc_by_ctrl_pv = delta_l2o * pv_ctrl                 # 旁证2：对照组PV
+    inc_by_avg_pv  = delta_l2o * (pv_ctrl + pv_exp) / 2  # 主推：双方平均PV
+
+    # 日均增量
+    inc_daily = inc_by_avg_pv / n_days
+
+    # 推全后日均（口径A：vs 实验上线前）
+    rollout_daily = inc_daily * ROLLOUT_MULT
+
+    # 间夜换算（酒店业务）
+    rollout_nights_daily = rollout_daily * NIGHTS_PER_UV
+
+    return {
+        "delta_l2o_pt": delta_l2o * 100,
+        "inc_by_exp_pv": inc_by_exp_pv,
+        "inc_by_ctrl_pv": inc_by_ctrl_pv,
+        "inc_by_avg_pv": inc_by_avg_pv,    # 主推
+        "inc_daily": inc_daily,
+        "rollout_daily_a": rollout_daily,  # 口径A唯一
+        "rollout_nights_daily": rollout_nights_daily,
+    }
+```
+
+### 日均比率算数平均（按天平权）
+
+```python
+def daily_avg_rate(daily_records, num_field, den_field, n_days):
+    """
+    比率类指标的日均（算数平均，按天平权）
+    与 sum(num)/sum(den) 累计口径区分使用
+    """
+    return sum(r[num_field] / r[den_field] for r in daily_records if r[den_field] > 0) / n_days
+
+# 用法
+ctrl_l2o_daily_avg = daily_avg_rate(ctrl_records, 'order_uv', 'pv', N_DAYS)
+# 注意：第二章Z检验仍用累计口径
+ctrl_l2o_cumulative = sum(r['order_uv'] for r in ctrl_records) / sum(r['pv'] for r in ctrl_records)
+```
+
+---
+
+## 报告章节模板片段（v8 标准）
+
+### 实验背景与策略 section（第0章）
+
+```html
+<div class="card">
+  <h2>实验背景与策略</h2>
+  <div class="kpi-grid" style="grid-template-columns: 1fr 1fr;">
+    <div class="kpi-card blue">
+      <div class="kpi-label">策略一</div>
+      <div class="kpi-value" style="font-size: 18px;">{策略一名称}</div>
+      <div class="kpi-sub">{适用人群} · {机制说明}</div>
+    </div>
+    <div class="kpi-card" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+      <div class="kpi-label">策略二</div>
+      <div class="kpi-value" style="font-size: 18px;">{策略二名称}</div>
+      <div class="kpi-sub">{适用人群} · {机制说明}</div>
+    </div>
+  </div>
+</div>
+```
+
+### 推全外推表格（第3章）
+
+```html
+<table>
+  <thead>
+    <tr>
+      <th>群体</th>
+      <th>当前桶日均增量UV</th>
+      <th>推全日均增量UV<br>(vs 实验上线前)</th>
+      <th>推全日均增量间夜<br>(× 1.5 间夜/UV)</th>
+    </tr>
+  </thead>
+  <tbody><!-- 动态生成 --></tbody>
+</table>
+<div class="note">
+  <strong>外推前提：</strong>实验流量占大盘 25%，推全倍数 ×4；对比基准为实验上线前；
+  <strong>间夜估算：</strong>按 <strong>1.5 间夜 / 下单UV</strong>（酒店业务历史经验值）换算。
+</div>
+```
+
+### 推全 KPI 双卡（第3章）
+
+```html
+<div class="kpi-grid">
+  <div class="kpi-card blue">
+    <div class="kpi-label">推全后日均增量UV</div>
+    <div class="kpi-value">+{rollout_daily:,.0f}</div>
+    <div class="kpi-sub">单/日 · vs 实验上线前</div>
+  </div>
+  <div class="kpi-card green">
+    <div class="kpi-label">推全后日均增量间夜</div>
+    <div class="kpi-value">+{rollout_nights:,.0f}</div>
+    <div class="kpi-sub">间夜/日 · 1.5 间夜/UV</div>
+  </div>
+</div>
+```
