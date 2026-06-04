@@ -105,12 +105,12 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
 
 1. 调用`fdp_data_olap_query`返回异常时，先判定故障类型：
    - **授权/连接问题**（401 / OAuth failed / server not found）→ 中断流程，提示用户安装授权 fliggy_data_mcp
-   - **引擎层故障**（code:9999 + `get_meta_data_group`正常返回）→ 触发降级方案，进入2.0询问用户
+   - **引擎层故障**（code:9999 + `get_meta_data_group`/`retrieve_fdp_meta_data_hsf`正常返回）→ 触发降级方案，进入2.0询问用户
    - **业务错误**（code正常但返回空数据）→ 检查维度/指标/日期是否正确，调整后重试
 
 2. 判定为引擎层故障的标准：
-   - `fdp_data_olap_query`返回`code:9999`且msg为`"olap查询失败：null"`
-   - 同一连接下`get_meta_data_group`（businessSpace="hotel_decision"）可正常返回完整元数据
+   - `fdp_data_olap_query`返回`code:9999`且msg为`"olap查询失败：null"`或`"租户不能为空"`
+   - 同一连接下`get_meta_data_group`（businessSpace="hotel_decision"）或`retrieve_fdp_meta_data_hsf`（keywords="预订", businessSpace="hotel_decision"）可正常返回完整元数据
    - `query_fdp_log`返回正常业务错误（如"未查询到日志"）而非授权失败
 
 **参数模板（AB实验，有实验ID时）：**
@@ -135,7 +135,7 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
     "isCalDayAvg": false,
     "sameTermRatioTypes": [],
     "isRemoveBizDateFilter": true,
-    "skillVersion": "1.3.0",
+    "skillVersion": "1.3.1",
     "query": "实验数据查询"
   }
 }
@@ -164,7 +164,7 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
     "isCalDayAvg": false,
     "sameTermRatioTypes": [],
     "isRemoveBizDateFilter": true,
-    "skillVersion": "1.3.0",
+    "skillVersion": "1.3.1",
     "query": "实验数据查询（无实验ID）"
   }
 }
@@ -204,7 +204,7 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
     "isCalDayAvg": false,
     "sameTermRatioTypes": [],
     "isRemoveBizDateFilter": true,
-    "skillVersion": "1.3.0",
+    "skillVersion": "1.3.1",
     "query": "人群包对比分析"
   }
 }
@@ -217,6 +217,19 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
 > 4. 人群包模式下**无需 `abtest_id` 过滤条件**，直接用 `group_id` + `in` 操作符即可。
 > 5. 分析逻辑与AB实验完全一致：人群包A作为对照组，人群包B作为实验组，计算L2O/L2D/D2O、Z检验、生成HTML报告。
 > 6. 注意检查两组曝光UV量级是否均衡，若差异较大（如>2倍）需在报告中提示样本不均衡风险。
+
+**FDP 工具速查（实验分析常用）：**
+
+| 工具名 | 用途 | 实验分析场景 |
+|--------|------|-------------|
+| `fdp_data_olap_query` | 核心 OLAP 数据查询 | 查询实验组/对照组的曝光、IPV、下单UV |
+| `retrieve_fdp_meta_data_hsf` | 检索指标/维度元数据 | 确认指标 code 是否存在、查找替代指标 |
+| `list_dims_by_mea_bs` | 查询指标关联的可用维度 | 验证 `is_88_vip`、`group_id` 等维度是否可用 |
+| `query_fdp_log` | 查询 OLAP 执行日志 | 排障：指标为 null 时查 traceId 和 SQL |
+| `qry_operator_ext` | 查询用户可访问业务空间 | 前置校验用户是否有 `hotel_decision` 权限 |
+
+> 调用方式：通过 `mcp__fliggy_data_mcp__{tool_name}` 调用，参数为 JSON 对象。
+> 示例：`mcp__fliggy_data_mcp__retrieve_fdp_meta_data_hsf` 参数 `{"keywords":"曝光","businessSpace":"hotel_decision","isDetail":"false"}`
 
 **关键格式要求（已踩坑验证）：**
 
@@ -238,9 +251,55 @@ description: 通用AB实验数据分析与报告生成。支持从fliggy_data_mc
 **三指标联合查询**：将三个指标放入同一个`measures`数组，可一次性返回曝光、IPV、下单UV，无需分次查询再合并。
 
 **数据完整性检查流程**：
-1. 查询返回后检查每个指标每天的值，标记null值
-2. 若某日期指标为null，调用`mcp__fliggy_data_mcp__query_fdp_log`获取traceId，分析SQL执行日志确认是底表无数据还是查询异常
-3. 若确认底表缺失，寻找替代指标（如`htl_listing_pv_fromlisting`替代`passageway_pv_listing`），重新查询验证
+1. 查询返回后检查每个指标每天的值，标记 null 值
+2. 若某日期指标为 null，调用 `mcp__fliggy_data_mcp__query_fdp_log` 获取 trace 详情：
+   - 参数：`{"traceId":"从 fdp_data_olap_query 返回的 traceId"}`
+   - 分析返回的 SQL 执行日志：确认底表是否有数据、是否命中正确分区、是否有权限拦截
+   - SQL 正确但返回空 → 记录为"可能延迟"，隔天重查
+   - 隔天重查仍为 null → 确认底表缺失，寻找替代指标
+3. 若确认底表缺失，寻找替代指标（如 `htl_listing_pv_fromlisting` 替代 `passageway_pv_listing`），重新查询验证
+
+**FDP 查询高级规则（从 fliggy-data-analysis 同步）：**
+
+**(a) limit 设置与截断检测**
+
+`limit.count` 过小会导致数据静默截断，使分析结论偏离真实分布。**禁止**直接套用默认值，必须先估算：
+
+| 场景 | 推荐 limit.count |
+|------|-----------------|
+| 无 dimensions 的纯指标聚合 | 10 |
+| 单维度 + 单日 / 聚合 | 1000 |
+| 多维度组合 / 跨日明细（如 biz_date + abtest_group_id + is_88_vip） | 5000 |
+| 高基数维度（hid、商品 id、城市等） | 10000 |
+| 任何非 Top N 场景 | 不得 < 500 |
+
+**截断检测（每次查询返回后强制执行）：**
+- 若 `返回行数 == limit.count`，视为**疑似截断**
+- 处理方式：(1) count 翻倍重查确认；(2) 加 `orders` 排序 + 翻页拿第二页；(3) 收紧 filter 分批查询并合并
+- **截断未确认前，禁止进入归因/结论环节**
+
+**(b) 串行查询策略**
+
+`fdp_data_olap_query` 必须逐个串行调用，**禁止并行**发起多个查询，以避免后端性能问题。多维度归因时按优先级依次查询（先总趋势 → 再逐个维度归因），每次等上一个查询返回后再发起下一个。
+
+**(c) filter 空值过滤写法**
+
+- 空值过滤必须写成 `{"key":"维度code","operator":"is","value":"null"}`
+- 非空过滤写成 `{"key":"维度code","operator":"is","value":"not null"}`
+- **不要**用 `operator:"="` + 空字符串或 null 值
+
+**(d) extParams 同环比参数**
+
+在 `extParams.sameTermRatioTypes` 中指定：
+
+| 类型 | 说明 |
+|------|------|
+| `DAY` | 日环比 |
+| `WEEK` | 周同比 |
+| `MONTH` | 月同比 |
+| `CALENDAR_YEAR` | 公历年同比 |
+
+> 结果中自动添加带前缀的字段：`*_comp_ratio@指标`（比率）、`*_comp_diff@指标`（差值）、`*_comp_value@指标`（同期值）
 
 #### 2.2 其他数据源
 
